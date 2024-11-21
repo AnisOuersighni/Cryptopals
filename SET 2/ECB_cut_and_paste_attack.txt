@@ -1,0 +1,61 @@
+Before we do the attack, a quick reminder: encryption does not prevent modifications of the message. 
+For authenticity of the message you need a Message Authentication Code or MAC (typically HMAC) or a signature scheme (RSA signing, DSA etc...).
+
+Nowadays you have what we call authenticated encryption that combine an **encryption scheme** and a **MAC** because combining them yourself is hazardous as well.
+
+The take-away is: 
+here we are going to alter the message easily because it's ECB mode, which is terrible; but do not think that you would be safe using CBC or CTR mode: all these modes are for encryption only and are not made to protect the authenticity of the message.
+
+#################  The attack  ##########
+
+        block_size = 16
+        # the email address for the admin profile we want to create
+        # must satisfy a single requirement:
+        # its length must be so that the role (the "user" value) should be at the start of the last block.
+        target_email = b"eeeeeeeeeeeemail@attacker.com"
+        print("using email address:", target_email)
+        print("blocks:", split_bytes_in_blocks(manager.profile_for(target_email), block_size))
+        ciphertext_1 = manager.get_encrypted_profile(target_email)
+
+
+using email address: b'eeeeeeeeeeeemail@attacker.com'
+blocks: [b'email=eeeeeeeeee', b'eemail@attacker.', b'com&uid=10&role=', b'user']
+
+With this (weird) email address, we manage to have the value for the "role" at the start of the last block.
+
+Remember that in ECB mode blocks are ****encrypted indepedently from one another****. 
+
+*****WHat we want is to replace the last block of this ciphertext with a valid ciphertext block that contains "admin" instead of "user".****
+
+Taking PKCS#7 padding into account, what we want is an encryption of "admin" padded to 16 bytes.
+
+        # here we fabricate an input so that
+        # we get an encryption of the plaintext "admin" with correct padding
+        chosen_plaintext = pkcs7_padding(b"admin", block_size)
+        fabricated_email = b"nextBlockShouldSt@rt.Here:" + chosen_plaintext
+        print("using fabricated email:", fabricated_email)
+        print("blocks:", split_bytes_in_blocks(manager.profile_for(fabricated_email), block_size))
+
+
+using fabricated email: b'nextBlockShouldSt@rt.Here:admin\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b'
+blocks: [b'email=nextBlockS', b'houldSt@rt.Here:', b'admin\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b', b'&uid=10&role=use', b'r']
+
+
+Again we had to be careful with lengths so that the "admin" value (plus proper padding) is at the beginning of a block
+
+Perfect! now we take our blocks from the first ciphertext and we replace the block containning "user" with our brand new "admin" block from the second ciphertext!
+
+ciphertext_2 = manager.get_encrypted_profile(fabricated_email)
+cut_block = ciphertext_2[2*block_size : 3*block_size]
+new_ciphertext = ciphertext_1[:-block_size] + cut_block
+profile = manager.decrypt_and_parse_profile(new_ciphertext)
+
+print("Profile obtained:")
+print(profile)
+
+if profile['role'] == 'admin':
+    html_test(True)
+Profile obtained:
+{'email': 'eeeeeeeeeeeemail@attacker.com', 'uid': '10', 'role': 'admin'}
+OK
+Again, I will never repeat it enough: Encryption does not provide integrity/authenticity protection!!!
